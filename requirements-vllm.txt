@@ -1,0 +1,18 @@
+# vLLM 后端依赖 —— 强烈建议装进独立虚拟环境
+#
+# 为什么必须隔离？
+#   vLLM 会精确锁定 torch 版本（实测 vLLM 0.30.0 要求 torch==2.13.0），
+#   直接装进 DSW 镜像的 base 环境会覆盖平台预装并已适配好的 torch，
+#   还可能连带升级 transformers，破坏镜像里其他组件的兼容性。
+#
+# 推荐流程：
+#   python -m venv /mnt/workspace/venv-vllm
+#   source /mnt/workspace/venv-vllm/bin/activate
+#   pip install --root-user-action=ignore -q -r requirements-vllm.txt
+#
+# 安装前先干跑一次，看清它打算替换哪些包：
+#   pip install --dry-run vllm
+#
+# 替代思路：直接选用平台提供的 vLLM 预置镜像，省去自建环境的兼容性风险。
+
+vllm

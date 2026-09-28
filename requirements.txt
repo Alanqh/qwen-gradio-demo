@@ -10,3 +10,6 @@ transformers>=4.40
 accelerate
 gradio>=4.0
 modelscope
+
+# 仅在运行 app_vllm.py（vLLM 前端）时需要；vLLM 后端本身见 requirements-vllm.txt
+openai
