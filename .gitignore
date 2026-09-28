@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 环境变量与密钥（切勿入库）
+.env
+.env.*
+
+# 模型权重与缓存（体积巨大，通过脚本按需下载）
+models/
+.cache/
+*.safetensors
+*.bin
+*.pth
+
+# 日志与临时文件
+*.log
+.DS_Store
+.ipynb_checkpoints/

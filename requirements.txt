@@ -1,0 +1,12 @@
+# 依赖清单
+# 安装：pip install --root-user-action=ignore -q -r requirements.txt
+#
+# 注意：torch 建议单独安装，或直接使用镜像预装的版本。
+# 若从 PyPI 拉默认构建，可能覆盖掉镜像中与驱动匹配的 CUDA 版本，
+# 导致 torch.cuda.is_available() 变为 False。安装后请运行 check_env.py 核对。
+
+torch
+transformers>=4.40
+accelerate
+gradio>=4.0
+modelscope
