@@ -7,15 +7,17 @@
     python app.py
 
 可选环境变量：
-    MODEL_NAME         模型 id（魔塔仓库名）或本地目录，默认 Qwen/Qwen2.5-0.5B-Instruct
-    MAX_NEW_TOKENS     单次最大生成 token 数，默认 512
-    GRADIO_SHARE       1 生成公网分享链接，0 关闭，默认 1
-    MODELSCOPE_CACHE   魔塔权重缓存目录
-    HF_HOME            HF 权重缓存目录
-    HF_ENDPOINT        HF 镜像地址，默认 https://hf-mirror.com
+    MODEL_NAME          模型 id（魔塔仓库名）或本地目录，默认 Qwen/Qwen2.5-0.5B-Instruct
+    MAX_NEW_TOKENS      单次最大生成 token 数，默认 512
+    GRADIO_SHARE        1 生成公网分享链接（需 frpc，见 README §7.6），默认 0
+    GRADIO_SERVER_PORT  监听端口，默认 7860
+    MODELSCOPE_CACHE    魔塔权重缓存目录
+    HF_HOME             HF 权重缓存目录
+    HF_ENDPOINT         HF 镜像地址，默认 https://hf-mirror.com
 """
 
 import os
+import sys
 
 # --- 网络出口配置：必须写在 import transformers 之前 ---
 # huggingface_hub 在 import 时就把 HF_ENDPOINT 读入常量，之后再改环境变量无效。
@@ -31,7 +33,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 # ---------------- 配置 ----------------
 MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
 MAX_NEW_TOKENS = int(os.environ.get("MAX_NEW_TOKENS", "512"))
-SHARE = os.environ.get("GRADIO_SHARE", "1") == "1"
+# 默认关闭公网分享：share=True 需要运行时从 cdn-media.huggingface.co 下载 frpc
+# 内网穿透客户端，国内实例通常访问不了（见 README §7.6）。改用平台自带端口映射。
+SHARE = os.environ.get("GRADIO_SHARE", "0") == "1"
+SERVER_PORT = int(os.environ.get("GRADIO_SERVER_PORT", "7860"))
 
 
 # ---------------- 模型路径解析：本地目录 > 魔塔 > HF 镜像 ----------------
@@ -154,6 +159,53 @@ def chat(message, history):
     return response
 
 
+# ---------------- 公网分享可用性预检 ----------------
+def _frpc_path() -> str:
+    """推算 gradio 期望的 frpc 二进制路径。
+
+    gradio 的缓存目录优先级：GRADIO_CACHE_DIR > HF_HOME/gradio > HF_HUB_CACHE/gradio。
+    本项目设置了 HF_HOME，所以缓存落在 $HF_HOME/gradio/frpc 下。
+    """
+    cache_dir = os.environ.get("GRADIO_CACHE_DIR")
+    if not cache_dir:
+        hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        cache_dir = os.path.join(hf_home, "gradio")
+
+    name = {
+        "linux": "frpc_linux_amd64_v0.3",
+        "darwin": "frpc_darwin_amd64_v0.3",
+        "win32": "frpc_windows_amd64_v0.3",
+    }.get(sys.platform, "frpc_linux_amd64_v0.3")
+
+    return os.path.join(cache_dir, "frpc", name)
+
+
+def _resolve_share() -> bool:
+    """share 请求了但 frpc 不存在时，主动降级并给出可操作的提示。
+
+    与其让 demo.launch() 抛异常中断启动，不如降级成本地服务继续可用——
+    本地 7860 端口配合平台端口映射，同样能实现公网访问。
+    """
+    if not SHARE:
+        return False
+
+    frpc = _frpc_path()
+    if os.path.exists(frpc):
+        return True
+
+    print(
+        "\n[警告] 已请求公网分享（GRADIO_SHARE=1），但缺少内网穿透客户端：\n"
+        f"       {frpc}\n"
+        "       gradio 需要从 cdn-media.huggingface.co 下载该文件，国内实例通常不可达。\n"
+        "       处理方式（任选其一）：\n"
+        "         1) 改用平台端口映射：保持 GRADIO_SHARE=0，在控制台把 7860 端口暴露出去\n"
+        "         2) 本地 SSH 端口转发：ssh -L 7860:localhost:7860 <实例地址>\n"
+        "         3) 手动放置 frpc 二进制（详见 README §7.6）\n"
+        "       本次已自动降级为本地监听，服务照常可用。\n"
+    )
+    return False
+
+
 # ---------------- 界面 ----------------
 demo = gr.ChatInterface(
     fn=chat,
@@ -166,6 +218,9 @@ demo = gr.ChatInterface(
     # examples=["你好，请介绍一下自己", "帮我写一段Python代码"],
 )
 
-# share=True 会生成 *.gradio.live 公网隧道，需要实例能出外网；
-# 若想改用 DSW 自带端口映射，设 GRADIO_SHARE=0 并通过 GRADIO_SERVER_PORT 指定端口。
-demo.launch(share=SHARE, server_name="0.0.0.0")
+# share 请求会自动预检：frpc 缺失则降级为本地监听，不会中断启动。
+demo.launch(
+    share=_resolve_share(),
+    server_name="0.0.0.0",   # 监听所有网卡，便于平台端口映射
+    server_port=SERVER_PORT,
+)

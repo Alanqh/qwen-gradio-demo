@@ -162,11 +162,12 @@ DSW 上 `/root` 通常是容量有限的高速盘，`/mnt/workspace` 才是持�
 |---|---|---|
 | `MODEL_NAME` | `Qwen/Qwen2.5-0.5B-Instruct` | 模型 id 或本地目录路径 |
 | `MAX_NEW_TOKENS` | `512` | 单次回复最大生成长度 |
-| `GRADIO_SHARE` | `1` | `1` 生成公网分享链接，`0` 关闭 |
+| `GRADIO_SHARE` | `0` | `1` 生成公网分享链接（需 frpc，见 §7.6），`0` 仅本地监听 |
 | `MODELSCOPE_CACHE` | `/mnt/workspace/.cache/modelscope` | 魔塔权重缓存 |
 | `HF_HOME` | `/mnt/workspace/.cache/huggingface` | HF 权重缓存 |
 | `HF_ENDPOINT` | `https://hf-mirror.com` | HF 镜像地址 |
-| `GRADIO_SERVER_PORT` | `7860` | Gradio 监听端口（Gradio 原生支持） |
+| `GRADIO_SERVER_PORT` | `7860` | 监听端口 |
+| `GRADIO_CACHE_DIR` | `$HF_HOME/gradio` | gradio 自身缓存目录（frpc 就放这里） |
 
 ---
 
@@ -211,8 +212,9 @@ DSW 上 `/root` 通常是容量有限的高速盘，`/mnt/workspace` 才是持�
 | 参数 | 说明 |
 |---|---|
 | `type` | **本项目不显式指定**，由 `_build_messages()` 同时兼容 dict 与 tuple 两种 history 格式 |
-| `share=True` | 生成 `*.gradio.live` 公网链接，需实例能出外网 |
+| `share=True` | 生成 `*.gradio.live` 公网链接，需运行时下载 frpc（见 §7.6）。**本项目默认关闭**，改为平台端口映射 |
 | `server_name="0.0.0.0"` | 监听所有网卡，便于通过实例端口映射访问 |
+| `server_port` | 监听端口，默认 7860，由 `GRADIO_SERVER_PORT` 控制 |
 
 ---
 
@@ -233,8 +235,9 @@ python app.py           # 启动对话服务
 下载完成：/mnt/workspace/.cache/modelscope/hub/models/Qwen/Qwen2.5-0.5B-Instruct
 模型加载完成，运行设备：cuda:0
 Running on local URL:  http://0.0.0.0:7860
-Running on public URL: https://xxxxx.gradio.live
 ```
+
+> 不会出现 `Running on public URL` —— 公网分享默认关闭（原因见 §7.6）。需要外网访问请走端口映射或 SSH 转发。
 
 ### 5.3 界面
 
@@ -311,6 +314,58 @@ Gradio 较新版本传给回调的是 `list[dict]`（`{"role": ..., "content": .
 
 按 §1.3 的规则核对 `torch.version.cuda` 与驱动 CUDA 上限；若 torch 编译版本过高，按驱动版本重装对应轮子。
 
+### 7.6 `Could not create share link. Missing file: .../frpc/frpc_linux_amd64_v0.3`
+
+完整报错：
+
+```
+Could not create share link. Missing file: /mnt/workspace/.cache/huggingface/gradio/frpc/frpc_linux_amd64_v0.3.
+Please check your internet connection...
+```
+
+**根因**：`share=True` 依赖 frpc 内网穿透客户端，而这个二进制**不在 gradio 的 pip 包里**——它是运行时才从 `cdn-media.huggingface.co` 下载的（属 COS 加速域名，与 huggingface.co 是不同的域名，因此用 `HF_ENDPOINT` 镜像**无效**）。国内实例到这个域名没有路由，报错信息里的"检查网络连接 / 杀毒软件"是误导性的模板文案。
+
+**方案 A：改用平台端口映射（推荐，零依赖）**
+
+```bash
+GRADIO_SHARE=0 python app.py     # 保持默认即可
+```
+
+然后在 DSW 控制台把 7860 端口暴露出去，平台会给出一个公网访问地址。这是"用平台能力替代第三方穿透工具"的标准做法。
+
+**方案 B：本地 SSH 端口转发（不需要公网暴露）**
+
+```bash
+ssh -L 7860:localhost:7860 <用户名>@<实例地址> -p <端口>
+# 再在本地浏览器打开 http://localhost:7860
+```
+
+**方案 C：手动放置 frpc 二进制**
+
+需要一台**能访问该 CDN 的机器**（国内常见网络通常也访问不了，需自行确认）：
+
+```bash
+# 1) 在能联网的机器上下载
+curl -L -O https://cdn-media.huggingface.co/frpc-gradio-0.3/frpc_linux_amd64
+
+# 2) 重命名
+mv frpc_linux_amd64 frpc_linux_amd64_v0.3
+
+# 3) 上传到实例的缓存目录（目录需提前创建）
+mkdir -p /mnt/workspace/.cache/huggingface/gradio/frpc
+#   然后用 scp / 平台的文件上传功能放进去
+
+# 4) 【易漏】必须加可执行权限，否则 gradio 仍会认为不可用
+chmod +x /mnt/workspace/.cache/huggingface/gradio/frpc/frpc_linux_amd64_v0.3
+
+# 5) 验证
+ls -l /mnt/workspace/.cache/huggingface/gradio/frpc/
+```
+
+放好之后 `GRADIO_SHARE=1 python app.py` 即可生成 `*.gradio.live` 链接（**有效期 72 小时**，且服务将暴露到公网，注意不要传输敏感数据）。
+
+> `app.py` 内置了预检：请求了 share 但 frpc 不存在时，会打印上述提示并**自动降级为本地监听**，而不是抛异常中断启动——服务可用性优先。
+
 ---
 
 ## 8. 项目结构
@@ -329,6 +384,7 @@ qwen-gradio-demo/
 - **网络配置前置**：`HF_ENDPOINT` / 缓存目录写在所有 import 之前
 - **history 双格式兼容**：不依赖 Gradio 版本默认值
 - **推理零梯度**：`torch.inference_mode()` + `model.eval()`
+- **分享能力预检**：`_resolve_share()` 在 frpc 缺失时降级为本地监听，保证服务启动不被中断
 
 ### 后续可扩展方向
 
